@@ -2,9 +2,6 @@ name = "ReSolverSquareDuct"
 uuid = "00000000-0000-0000-0000-000000000001"
 version = "0.1.0"
 
-[workspace]
-projects = ["test"]
-
 [deps]
 FDGrids = "28eb41cd-435a-4ede-8bdb-f2685fc03e8c"
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
