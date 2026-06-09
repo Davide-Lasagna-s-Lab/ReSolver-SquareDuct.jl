@@ -26,72 +26,76 @@ const WS2D = G.ws2d
 # Helpers                                                             #
 # ------------------------------------------------------------------ #
 
-ip2d(u, v) = dot(WS2D .* u, v)
+ip2d(u::AbstractMatrix, v::AbstractMatrix) = dot(WS2D .* u, v)
 
 # Wrap a 2D cross-section array into an FTField (shape N×N×1×1)
-function ftfield_from_2d(g, u_2d)
+function ftfield_from_2d(g::AbstractSquareDuctGrid,
+                         u_2d::AbstractMatrix)
     u_ft = NSEBase.FTField(g)
     parent(u_ft)[:, :, 1, 1] .= u_2d
     return u_ft
 end
 
 # Apply dd! along storage dimension `dim`; return 2D cross-section result
-function apply_dd(g, u_2d, dim; adjoint = false)
+function apply_dd(g::AbstractSquareDuctGrid,
+                  u_2d::AbstractMatrix,
+                  dim::Int;
+                  adjoint::Bool = false)
     out = NSEBase.FTField(g)
-    NSEBase.dd!(out, ftfield_from_2d(g, u_2d), Val(dim); adjoint = adjoint)
+    NSEBase.dd!(out, ftfield_from_2d(g, u_2d), Val(dim); adjoint)
     return parent(out)[:, :, 1, 1]
 end
 
 # Apply inhomogeneous_laplacian! (∂²/∂x² + ∂²/∂y²); return 2D result
-function apply_lap(g, u_2d; adjoint = false)
+function apply_lap(g::AbstractSquareDuctGrid,
+                   u_2d::AbstractMatrix;
+                   adjoint::Bool = false)
     out = NSEBase.FTField(g)
-    NSEBase.inhomogeneous_laplacian!(out, ftfield_from_2d(g, u_2d); adjoint = adjoint)
+    NSEBase.inhomogeneous_laplacian!(out, ftfield_from_2d(g, u_2d); adjoint)
     return parent(out)[:, :, 1, 1]
 end
 
 # ------------------------------------------------------------------ #
-# Smooth test functions (zero at x = 0 and x = 1 for no-slip BCs)   #
+# 1D test functions (all zero at x = 0 and x = 1 for no-slip BCs)   #
 # ------------------------------------------------------------------ #
 
-const u1d_a = @. XS * (1 - XS)       # x(1-x)
-const u1d_b = @. sin(2π * XS)         # sin(2πx)
-const u1d_c = @. XS^2 * (1 - XS)^2   # x²(1-x)²
-
-const u2d_a = u1d_a * u1d_b'   # x(1-x) · sin(2πy)
-const u2d_b = u1d_b * u1d_c'   # sin(2πx) · y²(1-y)²
-const u2d_c = u1d_a * u1d_a'   # x(1-x) · y(1-y)
+poly11(xs::AbstractVector)  = @. xs * (1 - xs)          # x(1-x)
+sin2pi(xs::AbstractVector)  = @. sin(2π * xs)           # sin(2πx)
+poly22(xs::AbstractVector)  = @. xs^2 * (1 - xs)^2      # x²(1-x)²
 
 # ------------------------------------------------------------------ #
 # 1. Quadrature accuracy                                              #
 # ------------------------------------------------------------------ #
 
 @testset "Quadrature accuracy" begin
-    f = sin.(π * XS)
-    @test sum(WS .* f.^2) ≈ 0.5      rtol=1e-12   # ∫₀¹ sin²(πx) dx = 1/2
-    @test sum(WS2D .* (f * f').^2) ≈ 0.25 rtol=1e-12   # ∫₀¹∫₀¹ sin⁴ ... = 1/4
+    f = sin.(π .* XS)
+    @test sum(WS .* f.^2)           ≈ 0.5  rtol=1e-12   # ∫₀¹ sin²(πx) dx   = 1/2
+    @test sum(WS2D .* (f * f').^2)  ≈ 0.25 rtol=1e-12   # ∫∫ sin⁴ = 1/4
 
-    @test sum(WS .* u1d_a)    ≈ 1/6  rtol=1e-12   # ∫₀¹ x(1-x) dx  = 1/6
-    @test sum(WS2D .* u2d_c)  ≈ 1/36 rtol=1e-12   # ∫∫ x(1-x)y(1-y) = 1/36
+    @test sum(WS .* poly11(XS))                     ≈ 1/6  rtol=1e-12   # ∫₀¹ x(1-x) dx   = 1/6
+    @test sum(WS2D .* (poly11(XS) * poly11(XS)'))   ≈ 1/36 rtol=1e-12   # ∫∫ x(1-x)y(1-y) = 1/36
 end
 
 # ------------------------------------------------------------------ #
 # 2. dd! derivative accuracy                                          #
 # ------------------------------------------------------------------ #
 #
-# u(x,y) = x(1-x)·y(1-y):  ∂u/∂x = (1-2x)·y(1-y)
-#                             ∂u/∂y = x(1-x)·(1-2y)
-#
-# u(x,y) = sin(2πx)·y²(1-y)²:  ∂u/∂x = 2π·cos(2πx)·y²(1-y)²
+# u(x,y) = x(1-x)·y(1-y):    ∂u/∂x = (1-2x)·y(1-y)
+#                               ∂u/∂y = x(1-x)·(1-2y)
+# u(x,y) = sin(2πx)·y²(1-y)²: ∂u/∂x = 2π·cos(2πx)·y²(1-y)²
 
 @testset "dd! derivative accuracy" begin
-    exact_x = (1 .- 2 .* XS) * u1d_a'
-    @test maximum(abs, apply_dd(G, u2d_c, 1) - exact_x) < 1e-8
+    u = poly11(XS) * poly11(XS)'       # x(1-x)·y(1-y)
 
-    exact_y = u1d_a * (1 .- 2 .* XS)'
-    @test maximum(abs, apply_dd(G, u2d_c, 2) - exact_y) < 1e-8
+    exact_x = (1 .- 2 .* XS) * poly11(XS)'
+    @test maximum(abs, apply_dd(G, u, 1) - exact_x) < 1e-8
 
-    exact_sinx = (2π .* cos.(2π .* XS)) * u1d_c'
-    @test maximum(abs, apply_dd(G, u2d_b, 1) - exact_sinx) < 1e-8
+    exact_y = poly11(XS) * (1 .- 2 .* XS)'
+    @test maximum(abs, apply_dd(G, u, 2) - exact_y) < 1e-8
+
+    u_sinpoly = sin2pi(XS) * poly22(XS)'   # sin(2πx)·y²(1-y)²
+    exact_sinx = (2π .* cos.(2π .* XS)) * poly22(XS)'
+    @test maximum(abs, apply_dd(G, u_sinpoly, 1) - exact_sinx) < 1e-8
 end
 
 # ------------------------------------------------------------------ #
@@ -102,12 +106,16 @@ end
 # tested for dim = 1 (∂/∂x) and dim = 2 (∂/∂y)
 
 @testset "dd! adjointness" begin
-    for (u, v) in [(u2d_a, u2d_b), (u2d_b, u2d_c), (u2d_c, u2d_a),
-                   (u2d_a, u2d_a), (u2d_b, u2d_b)]
-        for dim in (1, 2)
-            @test ip2d(apply_dd(G, u, dim), v) ≈
-                  ip2d(u, apply_dd(G, v, dim; adjoint = true)) rtol=1e-12
-        end
+    pairs = [
+        (poly11(XS) * sin2pi(XS)',  sin2pi(XS) * poly22(XS)'),
+        (sin2pi(XS) * poly22(XS)',  poly22(XS) * poly11(XS)'),
+        (poly22(XS) * poly11(XS)',  poly11(XS) * sin2pi(XS)'),
+        (poly11(XS) * sin2pi(XS)',  poly11(XS) * sin2pi(XS)'),
+        (sin2pi(XS) * poly22(XS)',  sin2pi(XS) * poly22(XS)'),
+    ]
+    for (u, v) in pairs, dim in (1, 2)
+        @test ip2d(apply_dd(G, u, dim), v) ≈
+              ip2d(u, apply_dd(G, v, dim; adjoint = true)) rtol=1e-12
     end
 end
 
@@ -118,8 +126,13 @@ end
 # <Δu, v>_w  ==  <u, Δ⁺v>_w   where Δ = ∂²/∂x² + ∂²/∂y²
 
 @testset "inhomogeneous_laplacian! adjointness" begin
-    for (u, v) in [(u2d_a, u2d_b), (u2d_b, u2d_c), (u2d_c, u2d_a),
-                   (u2d_a, u2d_a)]
+    pairs = [
+        (poly11(XS) * sin2pi(XS)',  sin2pi(XS) * poly22(XS)'),
+        (sin2pi(XS) * poly22(XS)',  poly22(XS) * poly11(XS)'),
+        (poly22(XS) * poly11(XS)',  poly11(XS) * sin2pi(XS)'),
+        (poly11(XS) * sin2pi(XS)',  poly11(XS) * sin2pi(XS)'),
+    ]
+    for (u, v) in pairs
         @test ip2d(apply_lap(G, u), v) ≈
               ip2d(u, apply_lap(G, v; adjoint = true)) rtol=1e-12
     end
@@ -135,8 +148,7 @@ end
 #   ||Δu||²     = π⁴       (Δu = -2π²u → ||Δu||² = 4π⁴·1/4)
 
 @testset "2D field norms (analytical)" begin
-    sinx = sin.(π .* XS)
-    u    = sinx * sinx'
+    u = sin.(π .* XS) * sin.(π .* XS)'
 
     @test ip2d(u, u) ≈ 1/4 rtol=1e-12
 
@@ -196,10 +208,7 @@ end
 #   (b) FFT norm ≈ ½ · Σ_xy · I₀(2)²     (analytical, fine-grid I₀(2))
 #   (c) VectorField (3 identical components) norm² = 3 × single-component norm²
 
-const NZ_NORM = 63
-const NT_NORM = 63
-
-const G_NORM = SquareDuctGrid(N, WIDTH, NZ_NORM, NT_NORM, ALPHA;
+const G_NORM = SquareDuctGrid(N, WIDTH, 63, 63, ALPHA;
                               dist = FDGrids.GaussLobattoGrid())
 
 @testset "4D velocity-field norm (analytical)" begin
@@ -207,17 +216,14 @@ const G_NORM = SquareDuctGrid(N, WIDTH, NZ_NORM, NT_NORM, ALPHA;
 
     # (a) Parseval: FFT norm == direct quadrature sum -------------------
     #
-    #   ||u||² = ½ · (1/(Nz·Nt)) · Σ_{ix,iy,jz,jt} ws2d[ix,iy] · u(ix,iy,jz,jt)²
+    #   ||u||² = ½ · (1/(Nz·Nt)) · Σ_{ix,iy,jz,jt} ws2d[ix,iy] · u²
     #
-    # Using coordinate arrays and weights from G_NORM itself so that the
-    # comparison is the exact Parseval identity (no approximation beyond
-    # floating-point rounding).
+    # Coordinate arrays and weights both from G_NORM → exact Parseval identity.
 
-    X, Y, Z, T   = NSEBase.points(G_NORM)
-    u_phys       = @. u_fun(X, Y, Z, T)   # shape (N, N, NZ_NORM, NT_NORM)
-    ws2d_norm    = NSEBase.weights(G_NORM)
-    norm_direct  = 0.5 * sum(reshape(ws2d_norm, N, N, 1, 1) .* u_phys.^2) /
-                   (NZ_NORM * NT_NORM)
+    X, Y, Z, T  = NSEBase.points(G_NORM)
+    u_phys      = @. u_fun(X, Y, Z, T)
+    ws2d_norm   = NSEBase.weights(G_NORM)
+    norm_direct = 0.5 * sum(reshape(ws2d_norm, N, N, 1, 1) .* u_phys.^2) / (63 * 63)
 
     û = NSEBase.FFT(NSEBase.Field(G_NORM, u_fun))
 
@@ -225,18 +231,13 @@ const G_NORM = SquareDuctGrid(N, WIDTH, NZ_NORM, NT_NORM, ALPHA;
 
     # (b) Analytical: ½ · Σ_xy · I₀(2)² -----------------------------------
     #
-    # I₀(2) = ∫₀¹ exp(2sin(2πz)) dz, computed from a 100 001-point trapezoidal
-    # sum. Error is below 1e-15 for this smooth periodic integrand.
+    # I₀(2) = ∫₀¹ exp(2sin(2πz)) dz via 100 001-point trapezoidal sum;
+    # error < 1e-15 for this smooth periodic integrand.
 
-    z_fine = (0:100_000) ./ 100_001
-    I0_2   = mean(exp.(2 .* sin.(2π .* z_fine)))
-
-    xs_norm = vec(X)                                   # (N,) x-coordinates from G_NORM
-    sx      = sin.(π .* xs_norm)                       # (N,)
-    Σ_xy    = sum(ws2d_norm .* (sx * sx').^2)          # ≈ 1/4 by quadrature
-    norm_analytic = 0.5 * Σ_xy * I0_2^2
-
-    @test LinearAlgebra.norm(û)^2 ≈ norm_analytic rtol=1e-10
+    I0_2  = mean(exp.(2 .* sin.(2π .* (0:100_000) ./ 100_001)))
+    sx    = sin.(π .* vec(X))          # sin(πx) at G_NORM collocation points
+    Σ_xy  = sum(ws2d_norm .* (sx * sx').^2)
+    @test LinearAlgebra.norm(û)^2 ≈ 0.5 * Σ_xy * I0_2^2 rtol=1e-10
 
     # (c) VectorField: three identical components → norm² = 3 × single ----
     q = NSEBase.FFT(NSEBase.VectorField(G_NORM, u_fun, u_fun, u_fun))
