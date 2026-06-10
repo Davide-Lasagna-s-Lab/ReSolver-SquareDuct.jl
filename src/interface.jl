@@ -1,67 +1,73 @@
-# NSEBase method extensions for SquareDuctGrid.
+# NSEBase and NSEBaseMPIExt method extensions for AbstractSquareDuctGrid.
 #
-# NSEBase treats inhomogeneous directions as abstract: `dd!` and
-# `inhomogeneous_laplacian!` throw NotImplementedError for non-FFT dims and
-# expect downstream packages to extend them with grid-specific matrix
-# applications. These are those extensions.
+# NSEBase.dd! and NSEBase.inhomogeneous_laplacian! are the hooks NSEBase calls
+# for inhomogeneous (non-FFT) spatial directions. NSEBaseMPIExt.derivative_matrix
+# is the hook NSEBaseMPIExt calls to obtain the local FD matrix for each MPI rank.
 #
-# The duct has two inhomogeneous directions:
-#   - x → storage dim 1  (DUCT_INHOMOGENEOUS_DIMS[1])
-#   - y → storage dim 2  (DUCT_INHOMOGENEOUS_DIMS[2])
-#
-# Both use the same operator D₁ (or D₁⁺), so dd! needs only one method.
-# FDGrids.mul! routes by the Val(DIM) argument passed from the caller.
-#
-# `parent(out)` is unwrapped before every `mul!` to get a plain array.
-# FTField does not implement Base.strides, so views of FTField are not
-# recognised as strided arrays by BLAS; unwrapping first ensures mul! dispatches
-# to the FDGrids kernel rather than generic BLAS.
-
-# ------------------------------------------------------------------ #
-# First-order derivative                                              #
-# ------------------------------------------------------------------ #
+# parent() is unwrapped before every mul! call. FTField does not implement
+# Base.strides, so views of FTField are not recognised as strided arrays by BLAS;
+# unwrapping first ensures mul! dispatches to the FDGrids kernel.
 
 """
-    NSEBase.dd!(out, u, ::Val{DIM}; adjoint=false)
+    NSEBase.dd!(out, u, Val(dim); adjoint=false)
 
-Apply the cross-section derivative in storage dimension `DIM` (1 for x, 2 for y).
+Apply a first-order finite-difference derivative in storage dimension `dim`.
 
-Both inhomogeneous directions use the same operator `D₁` (or `D₁⁺` when
-`adjoint=true`); `FDGrids.mul!` routes the application along the correct
-storage dimension via the `Val(DIM)` argument.
+`dim == 1` is the duct `x` direction and `dim == 2` is the `y` direction.
+Both directions share the same operator `D₁` (or `D₁⁺` when `adjoint=true`);
+`FDGrids.mul!` routes the matrix application along the correct dimension via
+the `Val(dim)` argument.
 """
-function NSEBase.dd!(out::NSEBase.FTField{G}, u::NSEBase.FTField{G},
+function NSEBase.dd!(out::NSEBase.FTField{G},
+                     u::NSEBase.FTField{G},
                      dim::Val{DIM};
-                     adjoint::Bool = false) where {DIM, G<:AbstractSquareDuctGrid{<:Any, <:Any, NSEBase.Undecomposed}}
+                     adjoint::Bool=false) where {DIM, G<:AbstractSquareDuctGrid{<:Any, <:Any, NSEBase.Undecomposed}}
     D = adjoint ? NSEBase.grid(u).D₁⁺ : NSEBase.grid(u).D₁
     LinearAlgebra.mul!(parent(out), D, parent(u), dim)
     return out
 end
 
-# ------------------------------------------------------------------ #
-# Laplacian                                                           #
-# ------------------------------------------------------------------ #
+"""
+    NSEBaseMPIExt.derivative_matrix(g::AbstractSquareDuctGrid, stor_dim, Val(order), Val(adj))
+
+Return the cross-section FD matrix for storage dimension `stor_dim`, derivative
+`order`, and adjoint flag `adj`.
+
+`NSEBaseMPIExt._dd_over!` calls this on the parent (serial) grid of a
+`DecomposedGrid` to obtain the local stencil matrix before applying it to each
+rank's slab. Both cross-section dimensions (1 for x, 2 for y) share the same
+`D₁`/`D₂` operators. Defining this method here rather than in a package
+extension avoids boilerplate: `NSEBaseMPIExt` is a direct dependency and the
+method is always needed for any MPI run. Without it the decomposed derivative
+kernel throws a `MethodError` at runtime.
+"""
+function NSEBaseMPIExt.derivative_matrix(g::AbstractSquareDuctGrid,
+                                          stor_dim::Int,
+                                          ::Val{ORDER},
+                                          ::Val{ADJ}=Val(false)) where {ORDER, ADJ}
+    stor_dim in DUCT_INHOMOGENEOUS_DIMS ||
+        throw(ArgumentError("storage dimension $stor_dim is not an inhomogeneous duct direction"))
+    ORDER == 1 && return ADJ ? g.D₁⁺ : g.D₁
+    ORDER == 2 && return ADJ ? g.D₂⁺ : g.D₂
+    throw(ArgumentError("only orders 1 and 2 are available, got order=$ORDER"))
+end
 
 """
     NSEBase.inhomogeneous_laplacian!(out, u; adjoint=false)
 
-Apply the cross-section (x + y) contribution to the Laplacian of `u`.
+Apply the cross-section finite-difference Laplacian `∂²/∂x² + ∂²/∂y²` in-place.
 
-Computes `(D₂ applied along dim 1) + (D₂ applied along dim 2)` and writes the
-combined result into `out`. The homogeneous spectral contribution (z wavenumber
-terms) is added later by `NSEBase.add_homogeneous_laplacian!`.
-
-The two terms are accumulated using `FDGrids.mul!` with `Val(false)` (overwrite)
-followed by `Val(true)` (accumulate), which avoids any intermediate allocation.
+The two terms are accumulated using the FDGrids `Val(true)` overwrite/accumulate
+flag, avoiding any temporary allocation. The homogeneous (spanwise/temporal)
+Fourier contribution is added separately by `NSEBase.add_homogeneous_laplacian!`.
+With `adjoint=true` each second-derivative matrix is replaced by its weighted
+discrete adjoint `D₂⁺`.
 """
-function NSEBase.inhomogeneous_laplacian!(out::NSEBase.FTField{G}, u::NSEBase.FTField{G};
-                                          adjoint::Bool = false) where {G<:AbstractSquareDuctGrid{<:Any, <:Any, NSEBase.Undecomposed}}
+function NSEBase.inhomogeneous_laplacian!(out::NSEBase.FTField{G},
+                                          u::NSEBase.FTField{G};
+                                          adjoint::Bool=false) where {G<:AbstractSquareDuctGrid{<:Any, <:Any, NSEBase.Undecomposed}}
     D2 = adjoint ? NSEBase.grid(u).D₂⁺ : NSEBase.grid(u).D₂
-    # Overwrite out with D₂ applied along dim 1 (∂²/∂x²).
-    LinearAlgebra.mul!(parent(out), D2, parent(u),
-                       Val(DUCT_INHOMOGENEOUS_DIMS[1]), Val(false))
-    # Accumulate D₂ applied along dim 2 (∂²/∂y²) into out.
-    LinearAlgebra.mul!(parent(out), D2, parent(u),
-                       Val(DUCT_INHOMOGENEOUS_DIMS[2]), Val(true))
+    LinearAlgebra.mul!(parent(out), D2, parent(u), Val(DUCT_INHOMOGENEOUS_DIMS[1]), Val(false))
+    LinearAlgebra.mul!(parent(out), D2, parent(u), Val(DUCT_INHOMOGENEOUS_DIMS[2]), Val(true))
     return out
 end

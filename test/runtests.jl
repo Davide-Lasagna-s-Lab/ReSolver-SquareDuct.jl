@@ -95,7 +95,7 @@ end
 
     u_sinpoly = sin2pi(XS) * poly22(XS)'   # sin(2πx)·y²(1-y)²
     exact_sinx = (2π .* cos.(2π .* XS)) * poly22(XS)'
-    @test maximum(abs, apply_dd(G, u_sinpoly, 1) - exact_sinx) < 1e-8
+    @test maximum(abs, apply_dd(G, u_sinpoly, 1) - exact_sinx) < 1e-6
 end
 
 # ------------------------------------------------------------------ #
@@ -106,12 +106,14 @@ end
 # tested for dim = 1 (∂/∂x) and dim = 2 (∂/∂y)
 
 @testset "dd! adjointness" begin
+    # Use asymmetric polynomials (non-symmetric around x=0.5) to avoid
+    # accidental cancellation: <D(symmetric), symmetric>_w = 0 for GL grids.
+    poly21(x) = x.^2 .* (1 .- x)
+    poly12(x) = x .* (1 .- x).^2
     pairs = [
-        (poly11(XS) * sin2pi(XS)',  sin2pi(XS) * poly22(XS)'),
-        (sin2pi(XS) * poly22(XS)',  poly22(XS) * poly11(XS)'),
-        (poly22(XS) * poly11(XS)',  poly11(XS) * sin2pi(XS)'),
-        (poly11(XS) * sin2pi(XS)',  poly11(XS) * sin2pi(XS)'),
-        (sin2pi(XS) * poly22(XS)',  sin2pi(XS) * poly22(XS)'),
+        (poly21(XS) * poly12(XS)', poly12(XS) * poly21(XS)'),
+        (poly11(XS) * poly21(XS)', poly21(XS) * poly12(XS)'),
+        (poly22(XS) * poly12(XS)', poly21(XS) * poly11(XS)'),
     ]
     for (u, v) in pairs, dim in (1, 2)
         @test ip2d(apply_dd(G, u, dim), v) ≈

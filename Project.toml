@@ -7,6 +7,15 @@ FDGrids = "28eb41cd-435a-4ede-8bdb-f2685fc03e8c"
 FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 NSEBase = "9778a910-ce4d-423e-92be-12991f0cf10c"
+NSEBaseMPIExt = "c724298d-75c1-46c2-b795-cd153ae6310d"
+
+[sources]
+FDGrids = {path = "../FDGrids.jl"}
+NSEBase = {path = "../NSEBase.jl"}
+NSEBaseMPIExt = {path = "../NSEBaseMPIExt.jl"}
 
 [compat]
 LinearAlgebra = "1.11.0"
+
+[workspace]
+projects = ["test"]
